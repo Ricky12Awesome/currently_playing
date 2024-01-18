@@ -16,8 +16,8 @@ pub enum MediaState {
 }
 
 /// Metadata of what is currently playing
-#[derive(Default, Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde_with::serde_as]
+#[derive(Default, Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct MediaMetadata<'a> {
   /// UID of what is currently playing if available
   pub uid: Option<Cow<'a, str>>,
@@ -26,7 +26,7 @@ pub struct MediaMetadata<'a> {
   /// State of what is currently playing
   pub state: MediaState,
   /// Duration of what is currently playing
-  #[serde_as(as = "DurationMilliSeconds<u64>")]
+  #[serde_as(as = "::serde_with::DurationMilliSeconds<u64>")]
   pub duration: Duration,
   /// Title of what is currently playing
   pub title: Cow<'a, str>,
@@ -43,6 +43,7 @@ pub struct MediaMetadata<'a> {
 
 /// Media Events
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum MediaEvent<'a> {
   /// Event for when media changed (like going to next song)
   MediaChanged(MediaMetadata<'a>),
