@@ -9,8 +9,8 @@ async fn main() -> currently_playing::Result<()> {
   let media = MediaListener::new().await.unwrap();
 
   loop {
-    let metadata = media.poll_async().await?;
-    let elapsed = media.poll_elapsed().await?;
+    let metadata = media.poll_async(true).await?;
+    let elapsed = media.poll_elapsed(true).await?;
 
     println!("\x1bc");
 

@@ -18,7 +18,7 @@ async fn main() {
     let duration = Duration::from_secs(5);
 
     let result = benchmarking::bench_function_with_duration(duration, |m| {
-      m.measure(|| handle.block_on(media.poll_async()));
+      m.measure(|| handle.block_on(media.poll_async(true)));
     })
     .unwrap();
 

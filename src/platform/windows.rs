@@ -69,7 +69,7 @@ impl MediaListener {
     Self::new_with_handle(TokioHandle::current()).await
   }
 
-  pub async fn poll_elapsed(&self) -> Result<Duration> {
+  pub async fn poll_elapsed(&self, update: bool) -> Result<Duration> {
     // stupid lock guard doesn't let be use Try ?
     let session = self.session.read().await;
     let session = session.as_ref();
@@ -80,14 +80,16 @@ impl MediaListener {
 
     let session = session.unwrap();
 
-    session.update_elapsed().await?;
+    if update {
+      session.update_elapsed().await?;
+    }
 
     let elapsed = session.get_elapsed().await;
 
     Ok(elapsed)
   }
 
-  pub async fn poll_async(&self) -> Result<MediaMetadata> {
+  pub async fn poll_async(&self, update: bool) -> Result<MediaMetadata> {
     // stupid lock guard doesn't let be use Try ?
     let session = self.session.read().await;
     let session = session.as_ref();
@@ -98,7 +100,9 @@ impl MediaListener {
 
     let session = session.unwrap();
 
-    session.update().await;
+    if update {
+      session.update().await;
+    }
 
     let metadata = session.to_metadata().await;
 
@@ -293,56 +297,4 @@ impl<T> Deref for ForceSendSync<T> {
   fn deref(&self) -> &Self::Target {
     &self.0
   }
-}
-
-pub async fn get_info() -> WResult<()> {
-  let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
-  let session = manager.GetCurrentSession()?;
-  let props = session.TryGetMediaPropertiesAsync()?.await?;
-  let thumbnail = props.Thumbnail()?.OpenReadAsync()?.await?;
-
-  let size = thumbnail.Size()?;
-  let pos = thumbnail.Position()?;
-  let stream = thumbnail.GetInputStreamAt(pos)?;
-  let reader = DataReader::CreateDataReader(&stream)?;
-
-  let mut buf = vec![0u8; size as _];
-
-  reader.LoadAsync(size as _)?.await?;
-  reader.ReadBytes(&mut buf)?;
-
-  thumbnail.Close()?;
-
-  let image = MediaImage {
-    format: thumbnail.ContentType()?.to_string_lossy().into(),
-    data: buf,
-  };
-
-  dbg!(image);
-  let event1 = TimelinePropertiesChangedEvent::new(|sender, value| {
-    println!("Timeline: {sender:?} {value:?}");
-    Ok(())
-  });
-
-  let event2 = MediaPropertiesChangedEvent::new(|sender, value| {
-    println!("Media: {sender:?} {value:?}");
-    Ok(())
-  });
-
-  let event3 = PlaybackInfoChangedEvent::new(|sender, value| {
-    println!("Playback: {sender:?} {value:?}");
-    Ok(())
-  });
-
-  let event4 = SessionChangedEvent::new(|sender, value| {
-    println!("Session: {sender:?} {value:?}");
-    Ok(())
-  });
-
-  let _t1 = session.TimelinePropertiesChanged(&event1)?;
-  let _t2 = session.MediaPropertiesChanged(&event2)?;
-  let _t3 = session.PlaybackInfoChanged(&event3)?;
-  let _t4 = manager.CurrentSessionChanged(&event4);
-
-  Ok(())
 }
