@@ -1,5 +1,4 @@
 use std::any::type_name;
-use std::borrow::Cow;
 use std::fmt::{Debug, Display, Formatter};
 use std::time::Duration;
 
@@ -15,8 +14,24 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[error(transparent)]
 pub enum Error {
   #[cfg(windows)]
-  Platform(#[from] windows::core::Error),
+  Platform(windows::core::Error),
+  #[error("No media found or is currently opened")]
+  NotExist,
   Other(#[from] anyhow::Error),
+}
+
+#[cfg(windows)]
+#[allow(overflowing_literals)]
+impl From<windows::core::Error> for Error {
+  fn from(value: windows::core::Error) -> Self {
+    use windows::core::HRESULT;
+
+    match value.code() {
+      HRESULT(0x00000000) => Self::NotExist,
+      HRESULT(0x800706BA) => Self::NotExist,
+      _ => Self::Platform(value),
+    }
+  }
 }
 
 /// State of what is currently playing
@@ -85,29 +100,29 @@ impl From<String> for ImageFormat {
 /// Metadata of what is currently playing
 #[serde_with::serde_as]
 #[derive(Default, Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct MediaMetadata<'a> {
+pub struct MediaMetadata {
   /// UID of what is currently playing if available
-  pub uid: Option<Cow<'a, str>>,
+  pub uid: Option<String>,
   /// UID of what is currently playing if available
-  pub uri: Option<Cow<'a, str>>,
+  pub uri: Option<String>,
   /// State of what is currently playing
   pub state: MediaState,
   /// Duration of what is currently playing
   #[serde_as(as = "::serde_with::DurationMilliSeconds<u64>")]
   pub duration: Duration,
   /// Title of what is currently playing
-  pub title: Cow<'a, str>,
+  pub title: String,
   /// Album of what is currently playing if available
-  pub album: Option<Cow<'a, str>>,
+  pub album: Option<String>,
   /// Artists of what is currently playing
-  pub artists: Cow<'a, [Cow<'a, str>]>,
+  pub artists: Vec<String>,
   /// Cover art url of what is currently playing if available
-  pub cover_url: Option<Cow<'a, str>>,
+  pub cover_url: Option<String>,
   /// Cover art image data of what is currently playing if available
   pub cover: Option<MediaImage>,
   /// Background art url of what is currently playing if available
   /// (when you hit the "full screen" thing in the bottom-right corner of spotify)
-  pub background_url: Option<Cow<'a, str>>,
+  pub background_url: Option<String>,
   /// Background art image data of what is currently playing if available
   /// (when you hit the "full screen" thing in the bottom-right corner of spotify)
   pub background: Option<MediaImage>,
@@ -116,9 +131,9 @@ pub struct MediaMetadata<'a> {
 /// Media Events
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
-pub enum MediaEvent<'a> {
+pub enum MediaEvent {
   /// Event for when media changed (like going to next song)
-  MediaChanged(MediaMetadata<'a>),
+  MediaChanged(MediaMetadata),
   /// Event for when state is changed (like when pausing song)
   StateChanged(MediaState),
   /// Event for when progress is updated, usually called on a set interval

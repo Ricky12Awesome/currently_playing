@@ -1,21 +1,16 @@
 #![cfg(windows)]
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use windows::core::{Error as WError, Result as WResult, HRESULT};
-use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
-use windows::Media::Control::{
-  CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
-  GlobalSystemMediaTransportControlsSessionManager,
-  GlobalSystemMediaTransportControlsSessionMediaProperties,
-  GlobalSystemMediaTransportControlsSessionPlaybackInfo,
-  GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
-  PlaybackInfoChangedEventArgs,
-};
+use futures_util::lock::Mutex;
+use windows::core::{Error as WError, HRESULT, Result as WResult};
+use windows::Foundation::TypedEventHandler;
+use windows::Media::Control::{CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession, GlobalSystemMediaTransportControlsSessionManager, GlobalSystemMediaTransportControlsSessionMediaProperties, GlobalSystemMediaTransportControlsSessionPlaybackInfo, GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs, PlaybackInfoChangedEventArgs, TimelinePropertiesChangedEventArgs};
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
 
 use crate::{MediaImage, MediaMetadata, MediaState, Result};
 
+pub type TimelinePropertiesChangedEvent = TypedEventHandler<GlobalSystemMediaTransportControlsSession, TimelinePropertiesChangedEventArgs>;
 pub type PlaybackInfoChangedEvent =
   TypedEventHandler<GlobalSystemMediaTransportControlsSession, PlaybackInfoChangedEventArgs>;
 
@@ -34,8 +29,6 @@ struct SessionManager {
   playback_status: WResult<GlobalSystemMediaTransportControlsSessionPlaybackStatus>,
   properties: WResult<GlobalSystemMediaTransportControlsSessionMediaProperties>,
   thumbnail: WResult<MediaImage>,
-  media_change_event: Option<(MediaPropertiesChangedEvent, EventRegistrationToken)>,
-  playback_info_change_event: Option<(PlaybackInfoChangedEvent, EventRegistrationToken)>,
 }
 
 // need to impl these because of MediaPropertiesChangedEvent
@@ -45,17 +38,20 @@ unsafe impl Sync for SessionManager {}
 #[derive(Debug)]
 pub struct MediaListener {
   manager: GlobalSystemMediaTransportControlsSessionManager,
-  session: Arc<RwLock<WResult<SessionManager>>>,
+  session: Arc<Mutex<WResult<SessionManager>>>,
   handle: tokio::runtime::Handle,
   _event: Option<SessionChangedEvent>,
 }
+
+unsafe impl Send for MediaListener {}
+unsafe impl Sync for MediaListener {}
 
 impl MediaListener {
   pub async fn new_with_handle(handle: tokio::runtime::Handle) -> Result<Self> {
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
 
     let this = Self {
-      session: Arc::new(RwLock::new(
+      session: Arc::new(Mutex::new(
         manager.GetCurrentSession().map(SessionManager::new),
       )),
       _event: None,
@@ -90,17 +86,17 @@ impl MediaListener {
         return Ok(());
       };
 
-      let Ok(mut session) = handle.write() else {
-        return Ok(());
-      };
+      tokio.block_on(async {
+        let mut session = handle.lock().await;
 
-      let Ok(session) = session.as_mut() else {
-        return Ok(());
-      };
+        let Ok(session) = session.as_mut() else {
+          return Ok(());
+        };
 
-      tokio.block_on(session.update_session(new_session));
+        session.update_session(new_session).await;
 
-      Ok(())
+        Ok(())
+      })
     });
 
     self.manager.CurrentSessionChanged(&event)?;
@@ -108,82 +104,14 @@ impl MediaListener {
     Ok(())
   }
 
-  fn _on_change<F: Fn(MediaMetadata) + Send + Sync + 'static>(
-    handle: Arc<RwLock<WResult<SessionManager>>>,
-    tokio: tokio::runtime::Handle,
-    callback: Arc<F>,
-  ) -> WResult<()> {
-    let Ok(mut session) = handle.write() else {
-      return Ok(());
-    };
+  pub async fn poll_async(&self) -> Result<MediaMetadata> {
+    let mut session = self.session.lock().await;
+    let session = session.as_mut().map_err(|err| err.clone())?;
 
-    let Ok(session) = session.as_mut() else {
-      return Ok(());
-    };
+    session.update_all().await;
+    let metadata = session.create_metadata().await?;
 
-    let metadata = tokio.block_on(async {
-      session.update_all().await;
-      session.create_metadata().await
-    })?;
-
-    callback(metadata);
-
-    Ok(())
-  }
-
-  pub fn on_change<F: Fn(MediaMetadata) + Send + Sync + 'static>(
-    &mut self,
-    callback: F,
-  ) -> Result<()> {
-    let self_session = self.session.clone();
-    let handle = self.session.clone();
-    let tokio = self.handle.clone();
-
-    let callback = Arc::new(callback);
-
-    let media_change_event_callback = callback.clone();
-
-    let media_change_event = MediaPropertiesChangedEvent::new(move |_, _| {
-      Self::_on_change(
-        handle.clone(),
-        tokio.clone(),
-        media_change_event_callback.clone(),
-      )
-    });
-
-    let handle = self.session.clone();
-    let tokio = self.handle.clone();
-    let playback_info_change_event_callback = callback.clone();
-
-    let playback_info_change_event = PlaybackInfoChangedEvent::new(move |_, _| {
-      Self::_on_change(
-        handle.clone(),
-        tokio.clone(),
-        playback_info_change_event_callback.clone(),
-      )
-    });
-
-    let Ok(mut session) = self_session.write() else {
-      return Ok(());
-    };
-
-    let Ok(session) = session.as_mut() else {
-      return Ok(());
-    };
-
-    let media_change_event_token = session
-      .session
-      .MediaPropertiesChanged(&media_change_event)?;
-
-    let playback_info_change_event_token = session
-      .session
-      .PlaybackInfoChanged(&playback_info_change_event)?;
-
-    session.media_change_event = Some((media_change_event, media_change_event_token));
-    session.playback_info_change_event =
-      Some((playback_info_change_event, playback_info_change_event_token));
-
-    Ok(())
+    Ok(metadata)
   }
 }
 
@@ -195,22 +123,10 @@ impl SessionManager {
       playback_status: Err(WError::new(HRESULT(0), "uninitialized".into())),
       properties: Err(WError::new(HRESULT(0), "uninitialized".into())),
       thumbnail: Err(WError::new(HRESULT(0), "uninitialized".into())),
-      media_change_event: None,
-      playback_info_change_event: None,
     }
   }
 
   pub async fn update_session(&mut self, new_session: GlobalSystemMediaTransportControlsSession) {
-    if let Some((handler, token)) = self.media_change_event.as_ref() {
-      let _ = self.session.RemoveMediaPropertiesChanged(*token);
-      let _ = new_session.MediaPropertiesChanged(handler);
-    }
-
-    if let Some((handler, token)) = self.playback_info_change_event.as_ref() {
-      let _ = self.session.RemoveMediaPropertiesChanged(*token);
-      let _ = new_session.PlaybackInfoChanged(handler);
-    }
-
     self.session = new_session;
     self.update_all().await;
   }
@@ -288,7 +204,7 @@ impl SessionManager {
       .as_ref()
       .map_err(WError::clone)
       .and_then(GlobalSystemMediaTransportControlsSessionMediaProperties::Title)
-      .map(|s| s.to_string_lossy().into())?;
+      .map(|s| s.to_string_lossy())?;
 
     let album = self
       .properties
@@ -296,7 +212,7 @@ impl SessionManager {
       .ok()
       .map(GlobalSystemMediaTransportControlsSessionMediaProperties::AlbumTitle)
       .and_then(WResult::ok)
-      .map(|s| s.to_string_lossy().into());
+      .map(|s| s.to_string_lossy());
 
     let artist = self
       .properties
@@ -308,11 +224,6 @@ impl SessionManager {
 
     let cover = self.thumbnail.clone().ok();
 
-    let artists = match artist {
-      Some(value) => vec![value.into()].into(),
-      None => vec![].into(),
-    };
-
     Ok(MediaMetadata {
       uid: None,
       uri: None,
@@ -320,7 +231,7 @@ impl SessionManager {
       duration: Default::default(),
       title,
       album,
-      artists,
+      artists: artist.into_iter().collect(),
       cover_url: None,
       cover,
       background_url: None,
@@ -342,15 +253,10 @@ impl From<GlobalSystemMediaTransportControlsSessionPlaybackStatus> for MediaStat
   }
 }
 
-pub async fn get_info() -> WResult<MediaImage> {
+pub async fn get_info() -> WResult<()> {
   let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
   let session = manager.GetCurrentSession()?;
-  let info = session.GetPlaybackInfo()?;
-  let status = info.PlaybackStatus()?;
   let props = session.TryGetMediaPropertiesAsync()?.await?;
-  let title = props.Title().map(|s| s.to_string_lossy());
-  let artist = props.Artist().map(|s| s.to_string_lossy());
-  let typ = props.PlaybackType().unwrap().Value();
   let thumbnail = props.Thumbnail()?.OpenReadAsync()?.await?;
 
   let size = thumbnail.Size()?;
@@ -370,12 +276,31 @@ pub async fn get_info() -> WResult<MediaImage> {
     data: buf,
   };
 
-  println!("{props:?}");
-  println!("{status:?}");
-  println!("{title:?}");
-  println!("{artist:?}");
-  println!("{typ:?}");
-  println!("{thumbnail:?}");
+  dbg!(image);
+  let event1 = TimelinePropertiesChangedEvent::new(|sender, value| {
+    println!("Timeline: {sender:?} {value:?}");
+    Ok(())
+  });
 
-  Ok(image)
+  let event2 = MediaPropertiesChangedEvent::new(|sender, value| {
+    println!("Media: {sender:?} {value:?}");
+    Ok(())
+  });
+
+  let event3 = PlaybackInfoChangedEvent::new(|sender, value| {
+    println!("Playback: {sender:?} {value:?}");
+    Ok(())
+  });
+
+  let event4 = SessionChangedEvent::new(|sender, value| {
+    println!("Session: {sender:?} {value:?}");
+    Ok(())
+  });
+
+  let _t1 = session.TimelinePropertiesChanged(&event1)?;
+  let _t2 = session.MediaPropertiesChanged(&event2)?;
+  let _t3 = session.PlaybackInfoChanged(&event3)?;
+  let _t4 = manager.CurrentSessionChanged(&event4);
+
+  Ok(())
 }

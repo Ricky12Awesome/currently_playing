@@ -1,15 +1,23 @@
-use tokio::io::{AsyncReadExt, stdin};
+use std::time::Duration;
+
+use tokio::time::sleep;
+
 use currently_playing::platform::MediaListener;
 
 #[tokio::main]
 async fn main() -> currently_playing::Result<()> {
-  let mut media = MediaListener::new().await.unwrap();
+  let media = MediaListener::new().await.unwrap();
 
-  media.on_change(|metadata| {
-    dbg!(metadata);
-  })?;
+  loop {
+    let metadata = media.poll_async().await?;
 
-  stdin().read_exact(&mut [0]).await.unwrap();
+    println!("\x1bc");
 
-  Ok(())
+    println!("Title: {}", metadata.title);
+    println!("State: {:?}", metadata.state);
+    println!("Length: {:?}", metadata.duration);
+    println!("Artist: {:?}", metadata.artists);
+
+    sleep(Duration::from_millis(200)).await;
+  }
 }
