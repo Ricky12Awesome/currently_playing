@@ -1,4 +1,4 @@
-pub mod windows;
-
 #[allow(unused)]
 pub use windows::*;
+
+pub mod windows;

@@ -11,7 +11,7 @@ async fn main() {
     while let Some(Ok(event)) = connection.next().await {
       match event {
         // Gets called when user changed track
-        MediaEvent::MediaChanged(info) => println!("Changed track to {}", info.title),
+        MediaEvent::MediaChanged(info) => println!("Changed track to {:#?}", info),
         // Gets called when user changes state (if song is playing, paused or stopped)
         MediaEvent::StateChanged(state) => println!("Changed state to {:?}", state),
         // Gets called on a set interval, wont get called if player is paused or stopped,
