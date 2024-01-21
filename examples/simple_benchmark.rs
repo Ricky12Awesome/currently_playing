@@ -11,16 +11,16 @@ async fn main() {
     panic!("Cannot run in debug mode, since it effects performance")
   }
 
-  let media = MediaListener::new().await.unwrap();
+  let handle = Handle::current();
 
   spawn_blocking(move || {
+    let media = handle.block_on(MediaListener::new()).unwrap();
     let duration = Duration::from_secs(5);
 
     let result = benchmarking::bench_function_with_duration(duration, |m| {
-      let handle = Handle::current();
-
       m.measure(|| handle.block_on(media.poll_async()));
-    }).unwrap();
+    })
+    .unwrap();
 
     println!(
       "{:?} [{:?}/s] [{:?} in {duration:?}]",
