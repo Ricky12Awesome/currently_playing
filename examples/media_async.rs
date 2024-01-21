@@ -1,14 +1,15 @@
-use std::thread::sleep;
 use std::time::Duration;
+use tokio::time::sleep;
 
 use currently_playing::platform::MediaListener;
 
-fn main() -> currently_playing::Result<()> {
-  let media = MediaListener::new(None);
+#[tokio::main]
+async fn main() -> currently_playing::Result<()> {
+  let media = MediaListener::new_async().await?;
 
   loop {
-    let metadata = media.poll(true)?;
-    let elapsed = media.poll_elapsed(true)?;
+    let metadata = media.poll_async(true).await?;
+    let elapsed = media.poll_elapsed_async(true).await?;
 
     println!("\x1bc");
 
@@ -19,6 +20,6 @@ fn main() -> currently_playing::Result<()> {
     println!("Artist: {:?}", metadata.artists);
     println!("Cover: {:?}", metadata.cover);
 
-    sleep(Duration::from_millis(500));
+    sleep(Duration::from_millis(500)).await;
   }
 }

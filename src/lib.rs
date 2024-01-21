@@ -1,4 +1,3 @@
-use std::any::type_name;
 use std::fmt::{Debug, Display, Formatter};
 use std::time::Duration;
 
@@ -46,7 +45,7 @@ pub enum MediaState {
 }
 
 /// Image Format
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum ImageFormat {
   #[serde(alias = "image/png")]
   PNG,
@@ -60,7 +59,7 @@ pub enum ImageFormat {
 }
 
 /// Media Image data
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct MediaImage {
   pub format: ImageFormat,
   pub data: Vec<u8>,
@@ -68,7 +67,7 @@ pub struct MediaImage {
 
 impl Debug for MediaImage {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct(type_name::<Self>())
+    f.debug_struct("MediaImage")
       .field("format", &self.format)
       .field("data", &format!("vec![u8; {}]", self.data.len()))
       .finish()

@@ -1,13 +1,15 @@
 #![cfg(windows)]
 
+use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_locks::RwLock;
-use tokio::runtime::Handle as TokioHandle;
+use tokio::runtime::{Handle as TokioHandle, Runtime as TokioRuntime};
 use tokio::task::JoinHandle;
-use windows::core::Result as WResult;
+use windows::core::Error as WError;
+use windows::core::{Result as WResult, HRESULT};
 use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
   CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
@@ -34,28 +36,33 @@ pub type SessionChangedEvent = TypedEventHandler<
 
 #[derive(Debug)]
 pub struct MediaListener {
-  manager: GlobalSystemMediaTransportControlsSessionManager,
+  manager: Arc<RwLock<Option<ForceSendSync<GlobalSystemMediaTransportControlsSessionManager>>>>,
   session: Arc<RwLock<WResult<SessionManager>>>,
   handle: TokioHandle,
-  _event: Option<SessionChangedEvent>,
+  _runtime: Option<Arc<TokioRuntime>>,
+  _background: Option<JoinHandle<Result<()>>>,
 }
 
 impl MediaListener {
-  pub async fn new_with_handle(handle: TokioHandle) -> Result<Self> {
+  pub async fn new_with_handle_async(handle: TokioHandle) -> Result<Self> {
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
+    let session = Arc::new(RwLock::new(
+      manager
+      .GetCurrentSession()
+      .map(|s| SessionManager::new(s, handle.clone()))));
+
+    let manager = Arc::new(RwLock::new(Some(ForceSendSync(manager))));
+
+    Self::setup_events(manager.clone(), session.clone(), handle.clone()).await?;
 
     let this = Self {
-      session: Arc::new(RwLock::new(
-        manager
-          .GetCurrentSession()
-          .map(|s| SessionManager::new(s, handle.clone())),
-      )),
-      _event: None,
+      session,
+      _runtime: None,
+      _background: None,
       handle,
       manager,
     };
 
-    this.setup_events()?;
 
     Ok(this)
   }
@@ -64,12 +71,69 @@ impl MediaListener {
   ///
   /// This will panic if called outside the context of a Tokio runtime. ([tokio::runtime::Handle::current])
   ///
-  /// use [MediaListener::new_with_handle] instead
-  pub async fn new() -> Result<Self> {
-    Self::new_with_handle(TokioHandle::current()).await
+  /// use [MediaListener::new_with_handle_async] instead
+  pub async fn new_async() -> Result<Self> {
+    Self::new_with_handle_async(TokioHandle::current()).await
   }
 
-  pub async fn poll_elapsed(&self, update: bool) -> Result<Duration> {
+  /// Creates a MediaListener that updates in the background
+  ///
+  /// so you don't have to deal with async/await
+  pub fn new(handle: Option<TokioHandle>) -> Self {
+    let handle = handle.or_else(|| TokioHandle::try_current().ok());
+
+    let (handle, runtime) = match handle {
+      Some(handle) => (handle, None),
+      None => {
+        let runtime = TokioRuntime::new().unwrap();
+
+        (runtime.handle().clone(), Some(Arc::new(runtime)))
+      }
+    };
+
+    let mut this = Self {
+      manager: Arc::new(RwLock::new(None)),
+      session: Arc::new(RwLock::new(Err(WError::new(
+        HRESULT(0),
+        "undefined".into(),
+      )))),
+      handle: handle.clone(),
+      _runtime: runtime,
+      _background: None,
+    };
+
+    let this_manager = this.manager.clone();
+    let this_session = this.session.clone();
+    let this_handle = this.handle.clone();
+
+    let background = handle.spawn(async move {
+      let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
+
+      *this_session.write().await = manager
+        .GetCurrentSession()
+        .map(|s| SessionManager::new(s, this_handle.clone()));
+
+      *this_manager.write().await = Some(ForceSendSync(manager));
+
+      Self::setup_events(this_manager, this_session, this_handle).await?;
+
+      Ok(())
+    });
+
+    while !background.is_finished() {
+      std::thread::sleep(Duration::from_millis(1));
+    }
+
+    this._background = Some(background);
+
+    this
+  }
+
+  pub fn poll_elapsed(&self, update: bool) -> Result<Duration> {
+    self.handle.block_on(self.poll_elapsed_async(update))
+  }
+
+  pub async fn poll_elapsed_async(&self, update: bool) -> Result<Duration> {
     // stupid lock guard doesn't let be use Try ?
     let session = self.session.read().await;
     let session = session.as_ref();
@@ -87,6 +151,10 @@ impl MediaListener {
     let elapsed = session.get_elapsed().await;
 
     Ok(elapsed)
+  }
+
+  pub fn poll(&self, update: bool) -> Result<MediaMetadata> {
+    self.handle.block_on(self.poll_async(update))
   }
 
   pub async fn poll_async(&self, update: bool) -> Result<MediaMetadata> {
@@ -109,10 +177,11 @@ impl MediaListener {
     Ok(metadata)
   }
 
-  fn setup_events(&self) -> Result<()> {
-    let handle = self.session.clone();
-    let tokio = self.handle.clone();
-
+  async fn setup_events(
+    manager: Arc<RwLock<Option<ForceSendSync<GlobalSystemMediaTransportControlsSessionManager>>>>,
+    handle: Arc<RwLock<WResult<SessionManager>>>,
+    tokio: TokioHandle,
+  ) -> Result<()> {
     let event = SessionChangedEvent::new(move |manager, _| {
       let Some(manager) = manager else {
         return Ok(());
@@ -135,7 +204,11 @@ impl MediaListener {
       })
     });
 
-    self.manager.CurrentSessionChanged(&event)?;
+    let event = ForceSendSync(event);
+    let manager = manager.read().await;
+    let manager = manager.as_ref().unwrap();
+
+    manager.CurrentSessionChanged(&event.0)?;
 
     Ok(())
   }
@@ -154,6 +227,9 @@ struct SessionManager {
   state: Arc<RwLock<MediaState>>,
   thumbnail: Arc<RwLock<Option<MediaImage>>>,
 }
+
+unsafe impl Send for SessionManager {}
+unsafe impl Sync for SessionManager {}
 
 impl SessionManager {
   fn new(session: GlobalSystemMediaTransportControlsSession, handle: TokioHandle) -> Self {
@@ -196,7 +272,7 @@ impl SessionManager {
       let timeline = session.GetTimelineProperties()?;
       let info = session.GetPlaybackInfo()?;
       let props = session.TryGetMediaPropertiesAsync()?.await?;
-      let title = props.Artist().map(|s| s.to_string_lossy());
+      let title = props.Title().map(|s| s.to_string_lossy());
       let artist = props.Artist().map(|s| s.to_string_lossy());
       let state = info.PlaybackStatus().map(MediaState::from);
       let duration = timeline.EndTime()?;
@@ -287,6 +363,15 @@ impl From<GlobalSystemMediaTransportControlsSessionPlaybackStatus> for MediaStat
 }
 
 struct ForceSendSync<T>(pub T);
+
+impl<T> Debug for ForceSendSync<T>
+where
+  T: Debug,
+{
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    T::fmt(&self.0, f)
+  }
+}
 
 unsafe impl<T> Send for ForceSendSync<T> {}
 unsafe impl<T> Sync for ForceSendSync<T> {}

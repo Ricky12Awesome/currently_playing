@@ -38,17 +38,18 @@ features = ["sink", "async-await", "std"]
 version = "^0.52"
 features = [
     "Foundation_Metadata",
-#    "Win32_Media_MediaFoundation",
-#    "Media_Core",
-    "Storage_FileProperties",
-    "Storage_BulkAccess",
-    "Storage_Compression",
     "Storage_Streams",
     "Media_Control"
 ]
 
 [dev-dependencies]
 benchmarking = "^0.4"
+eframe = "^0.25"
+env_logger = "^0.11"
+
+[dev-dependencies.egui_extras]
+version = "^0.25"
+features = ["image"]
 
 [dev-dependencies.tokio]
 version = "^1.35"
