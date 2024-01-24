@@ -14,6 +14,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub enum Error {
   #[cfg(windows)]
   Platform(windows::core::Error),
+
+  #[cfg(target_os = "linux")]
+  Platform(#[from] platform::linux::MprisError),
   #[error("No media found or is currently opened")]
   NotExist,
   Other(#[from] anyhow::Error),

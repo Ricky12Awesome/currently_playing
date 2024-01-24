@@ -42,14 +42,21 @@ features = [
     "Media_Control"
 ]
 
+[target.'cfg(target_os = "linux")'.dependencies.mpris]
+version = "^2.0"
+
 [dev-dependencies]
 benchmarking = "^0.4"
 eframe = "^0.25"
 env_logger = "^0.11"
 
+[dev-dependencies.image]
+version = "^0.24"
+features = ["default"]
+
 [dev-dependencies.egui_extras]
 version = "^0.25"
-features = ["image"]
+features = ["all_loaders"]
 
 [dev-dependencies.tokio]
 version = "^1.35"

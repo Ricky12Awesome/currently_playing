@@ -19,6 +19,7 @@ use windows::Media::Control::{
 };
 use windows::Storage::Streams::DataReader;
 
+use super::ForceSendSync;
 use crate::{MediaImage, MediaMetadata, MediaState, Result};
 
 pub type TimelinePropertiesChangedEvent =
@@ -48,8 +49,9 @@ impl MediaListener {
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
     let session = Arc::new(RwLock::new(
       manager
-      .GetCurrentSession()
-      .map(|s| SessionManager::new(s, handle.clone()))));
+        .GetCurrentSession()
+        .map(|s| SessionManager::new(s, handle.clone())),
+    ));
 
     let manager = Arc::new(RwLock::new(Some(ForceSendSync(manager))));
 
@@ -62,7 +64,6 @@ impl MediaListener {
       handle,
       manager,
     };
-
 
     Ok(this)
   }
@@ -79,6 +80,7 @@ impl MediaListener {
   /// Creates a MediaListener that updates in the background
   ///
   /// so you don't have to deal with async/await
+  //noinspection DuplicatedCode
   pub fn new(handle: Option<TokioHandle>) -> Self {
     let handle = handle.or_else(|| TokioHandle::try_current().ok());
 
@@ -359,27 +361,5 @@ impl From<GlobalSystemMediaTransportControlsSessionPlaybackStatus> for MediaStat
       Status::Playing => Self::Playing,
       _ => unreachable!(),
     }
-  }
-}
-
-struct ForceSendSync<T>(pub T);
-
-impl<T> Debug for ForceSendSync<T>
-where
-  T: Debug,
-{
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    T::fmt(&self.0, f)
-  }
-}
-
-unsafe impl<T> Send for ForceSendSync<T> {}
-unsafe impl<T> Sync for ForceSendSync<T> {}
-
-impl<T> Deref for ForceSendSync<T> {
-  type Target = T;
-
-  fn deref(&self) -> &Self::Target {
-    &self.0
   }
 }

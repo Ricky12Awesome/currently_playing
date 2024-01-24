@@ -60,6 +60,7 @@ impl eframe::App for MyApp {
       ui.label(format!("Elapsed: {:?}", elapsed));
       ui.label(format!("Artist: {:?}", metadata.artists));
       ui.label(format!("Cover: {:?}", metadata.cover));
+      ui.label(format!("Cover: {:?}", metadata.cover_url));
 
       if let Some(cover) = metadata.cover {
         let source = ImageSource::Bytes {
@@ -67,6 +68,14 @@ impl eframe::App for MyApp {
           bytes: cover.data.into(),
         };
 
+        let image = Image::new(source);
+
+        ui.add_sized([300., 300.], image);
+      }
+
+
+      if let Some(cover) = metadata.cover_url {
+        let source = ImageSource::Uri(cover.into());
         let image = Image::new(source);
 
         ui.add_sized([300., 300.], image);

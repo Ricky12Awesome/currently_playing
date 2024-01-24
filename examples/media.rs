@@ -18,6 +18,7 @@ fn main() -> currently_playing::Result<()> {
     println!("Elapsed: {:?}", elapsed);
     println!("Artist: {:?}", metadata.artists);
     println!("Cover: {:?}", metadata.cover);
+    println!("Cover (URL): {:?}", metadata.cover_url);
 
     sleep(Duration::from_millis(500));
   }
