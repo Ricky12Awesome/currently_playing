@@ -73,7 +73,6 @@ impl eframe::App for MyApp {
         ui.add_sized([300., 300.], image);
       }
 
-
       if let Some(cover) = metadata.cover_url {
         let source = ImageSource::Uri(cover.into());
         let image = Image::new(source);

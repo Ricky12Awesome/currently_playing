@@ -3,9 +3,11 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio_tungstenite::tungstenite;
 
 pub mod platform;
 pub mod ws;
+mod listener;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -17,11 +19,20 @@ pub enum Error {
 
   #[cfg(target_os = "linux")]
   Platform(#[from] platform::linux::MprisError),
+
   #[error("No media found or is currently opened")]
   NotExist,
-  Other(#[from] anyhow::Error),
-}
 
+
+  Io(#[from] std::io::Error),
+
+  Tungstenite(#[from] tungstenite::Error),
+
+  Other(#[from] anyhow::Error),
+
+  #[error("{}, {}", 0.0, 0.1)]
+  FailedToCreateListener((Box<Self>, Box<Self>))
+}
 #[cfg(windows)]
 #[allow(overflowing_literals)]
 impl From<windows::core::Error> for Error {
