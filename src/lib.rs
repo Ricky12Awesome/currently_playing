@@ -7,7 +7,10 @@ use tokio_tungstenite::tungstenite;
 
 pub mod platform;
 pub mod ws;
-mod listener;
+pub mod listener;
+
+pub type TokioHandle = tokio::runtime::Handle;
+pub type TokioRuntime = tokio::runtime::Runtime;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

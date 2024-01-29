@@ -4,7 +4,7 @@ use eframe::egui;
 use eframe::egui::util::hash;
 use eframe::egui::{Image, ImageSource};
 
-use currently_playing::platform::MediaListener;
+use currently_playing::listener::{MediaListener, MediaListenerConfig};
 
 fn main() -> Result<(), eframe::Error> {
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -32,7 +32,12 @@ fn main() -> Result<(), eframe::Error> {
       egui_extras::install_image_loaders(&cc.egui_ctx);
 
       Box::new(MyApp {
-        listener: MediaListener::new(None),
+        listener: MediaListener::new(MediaListenerConfig {
+          handle: None,
+          ws: Default::default(),
+          priority: Default::default(),
+          hybrid: true,
+        }).unwrap(),
       })
     }),
   )
@@ -44,8 +49,8 @@ struct MyApp {
 
 impl eframe::App for MyApp {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    let metadata = self.listener.poll(true);
-    let elapsed = self.listener.poll_elapsed(false);
+    let metadata = self.listener.poll();
+    let elapsed = self.listener.poll_elapsed();
 
     egui::CentralPanel::default().show(ctx, |ui| {
       let Ok(metadata) = metadata else {
@@ -59,8 +64,11 @@ impl eframe::App for MyApp {
       ui.label(format!("Length: {:?}", metadata.duration));
       ui.label(format!("Elapsed: {:?}", elapsed));
       ui.label(format!("Artist: {:?}", metadata.artists));
+      ui.label(format!("Album: {:?}", metadata.album));
       ui.label(format!("Cover: {:?}", metadata.cover));
-      ui.label(format!("Cover: {:?}", metadata.cover_url));
+      ui.label(format!("Cover (URL): {:?}", metadata.cover_url));
+      ui.label(format!("Background: {:?}", metadata.background));
+      ui.label(format!("Background (URL): {:?}", metadata.background_url));
 
       if let Some(cover) = metadata.cover {
         let source = ImageSource::Bytes {

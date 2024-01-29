@@ -3,6 +3,8 @@
 use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -11,7 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::{Error, Message};
 use tokio_tungstenite::{accept_async, WebSocketStream};
 
-use crate::MediaEvent;
+use crate::{MediaEvent, MediaMetadata, TokioRuntime};
 
 /// Wraps around [TcpListener]
 ///
@@ -85,7 +87,7 @@ impl MediaConnection {
         let event = Self::handle_message(message.into());
 
         Some(event)
-      },
+      }
       Ok(_) => Some(Err(Error::Io(std::io::Error::new(
         ErrorKind::Unsupported,
         "Unsupported message type, only supports Text",
@@ -122,5 +124,75 @@ impl MediaListener {
     let ws = accept_async(stream).await?;
 
     Ok(MediaConnection { ws })
+  }
+}
+
+#[derive(Debug)]
+#[allow(unused)]
+pub struct MediaListenerPooled {
+  listener: Arc<MediaListener>,
+  runtime: Arc<TokioRuntime>,
+  metadata: Arc<RwLock<MediaMetadata>>,
+  elapsed: Arc<RwLock<Duration>>,
+  background: JoinHandle<()>,
+}
+
+impl MediaListenerPooled {
+  pub fn new(listener: MediaListener) -> std::io::Result<Self> {
+    let listener = Arc::new(listener);
+    let runtime = TokioRuntime::new()?;
+    let runtime = Arc::new(runtime);
+    let metadata = Arc::new(RwLock::new(MediaMetadata::default()));
+    let elapsed = Arc::new(RwLock::new(Duration::default()));
+
+    let _listener = listener.clone();
+    let _runtime = runtime.clone();
+    let _metadata = metadata.clone();
+    let _elapsed = elapsed.clone();
+
+    let background = std::thread::spawn(move || {
+      _runtime.block_on(background_task(_listener, _metadata, _elapsed));
+    });
+
+    Ok(Self {
+      listener,
+      runtime,
+      metadata,
+      elapsed,
+      background,
+    })
+  }
+
+  pub fn poll(&self) -> MediaMetadata {
+    self.metadata.read().unwrap().clone()
+  }
+
+  pub fn poll_elapsed(&self) -> Duration {
+    *self.elapsed.read().unwrap()
+  }
+}
+
+async fn background_task(
+  listener: Arc<MediaListener>,
+  metadata: Arc<RwLock<MediaMetadata>>,
+  elapsed: Arc<RwLock<Duration>>,
+) {
+  while let Ok(mut connection) = listener.get_connection().await {
+    while let Some(Ok(event)) = connection.next().await {
+      match event {
+        MediaEvent::MediaChanged(info) => {
+          *metadata.write().unwrap() = info;
+        },
+        MediaEvent::StateChanged(state) => {
+          metadata.write().unwrap().state = state;
+        },
+        MediaEvent::ProgressChanged(time) => {
+          let duration = metadata.read().unwrap().duration;
+          let duration = duration.mul_f64(time);
+
+          *elapsed.write().unwrap() = duration;
+        }
+      }
+    }
   }
 }
