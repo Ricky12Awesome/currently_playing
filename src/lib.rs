@@ -9,9 +9,6 @@ pub mod listener;
 pub mod platform;
 pub mod ws;
 
-pub type TokioHandle = tokio::runtime::Handle;
-pub type TokioRuntime = tokio::runtime::Runtime;
-
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Error)]
@@ -25,6 +22,14 @@ pub enum Error {
 
   #[error("No media found or is currently opened")]
   NotExist,
+
+  #[error("Not enabled")]
+  NotEnabled,
+
+  #[error("Closed")]
+  Closed,
+
+  Timeout(#[from] std::sync::mpsc::RecvTimeoutError),
 
   Io(#[from] std::io::Error),
 
@@ -147,7 +152,7 @@ pub struct MediaMetadata {
 }
 
 impl MediaMetadata {
-  fn merge(self, fallback: MediaMetadata) -> MediaMetadata {
+  pub fn merge(self, fallback: MediaMetadata) -> MediaMetadata {
     MediaMetadata {
       uid: self.uid.or(fallback.uid),
       uri: self.uri.or(fallback.uri),
@@ -178,6 +183,10 @@ impl MediaMetadata {
       background_url: self.background_url.or(fallback.background_url),
       background: self.background.or(fallback.background),
     }
+  }
+
+  pub fn is_different(&self, other: &Self) -> bool {
+    (self.uid.is_some() && self.uid != other.uid) || self.title != other.title
   }
 }
 

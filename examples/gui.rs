@@ -4,7 +4,8 @@ use eframe::egui;
 use eframe::egui::util::hash;
 use eframe::egui::{Image, ImageSource};
 
-use currently_playing::listener::{MediaListenerImpl, MediaSourceConfig};
+use currently_playing::listener::{MediaSource, MediaSourceConfig};
+use currently_playing::platform::MprisMediaSource;
 
 fn main() -> Result<(), eframe::Error> {
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -32,21 +33,19 @@ fn main() -> Result<(), eframe::Error> {
       egui_extras::install_image_loaders(&cc.egui_ctx);
 
       Box::new(MyApp {
-        listener: MediaListenerImpl::new(MediaSourceConfig::default()).unwrap(),
+        listener: MprisMediaSource::create(MediaSourceConfig::default()).unwrap(),
       })
     }),
   )
 }
 
 struct MyApp {
-  listener: MediaListenerImpl,
+  listener: MprisMediaSource,
 }
 
 impl eframe::App for MyApp {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
     let metadata = self.listener.poll();
-    let elapsed = self.listener.poll_elapsed();
-
     egui::CentralPanel::default().show(ctx, |ui| {
       let Ok(metadata) = metadata else {
         let err = metadata.unwrap_err();
@@ -57,7 +56,7 @@ impl eframe::App for MyApp {
       ui.label(format!("Title: {}", metadata.title));
       ui.label(format!("State: {:?}", metadata.state));
       ui.label(format!("Length: {:?}", metadata.duration));
-      ui.label(format!("Elapsed: {:?}", elapsed));
+      ui.label(format!("Elapsed: {:?}", metadata.elapsed));
       ui.label(format!("Artist: {:?}", metadata.artists));
       ui.label(format!("Album: {:?}", metadata.album));
       ui.label(format!("Cover: {:?}", metadata.cover));

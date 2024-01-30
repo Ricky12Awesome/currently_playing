@@ -10,10 +10,11 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Runtime;
 use tokio_tungstenite::tungstenite::{Error, Message};
 use tokio_tungstenite::{accept_async, WebSocketStream};
 
-use crate::{MediaEvent, MediaMetadata, TokioRuntime};
+use crate::{MediaEvent, MediaMetadata};
 
 /// Wraps around [TcpListener]
 ///
@@ -131,7 +132,7 @@ impl MediaListener {
 #[allow(unused)]
 pub struct MediaListenerPooled {
   listener: Arc<MediaListener>,
-  runtime: Arc<TokioRuntime>,
+  runtime: Arc<Runtime>,
   metadata: Arc<RwLock<MediaMetadata>>,
   elapsed: Arc<RwLock<Duration>>,
   background: JoinHandle<()>,
@@ -140,11 +141,10 @@ pub struct MediaListenerPooled {
 impl MediaListenerPooled {
   pub fn new(listener: MediaListener) -> std::io::Result<Self> {
     let listener = Arc::new(listener);
-    let runtime = TokioRuntime::new()?;
+    let runtime = Runtime::new()?;
     let runtime = Arc::new(runtime);
     let metadata = Arc::new(RwLock::new(MediaMetadata::default()));
     let elapsed = Arc::new(RwLock::new(Duration::default()));
-
     let _listener = listener.clone();
     let _runtime = runtime.clone();
     let _metadata = metadata.clone();
