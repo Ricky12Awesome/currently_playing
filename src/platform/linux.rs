@@ -1,15 +1,15 @@
 #![cfg(target_os = "linux")]
 
-use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use mpris::{PlaybackStatus, PlayerFinder};
 
-use crate::{Error, MediaEvent, MediaMetadata, MediaState, Result};
 use crate::listener::{MediaSource, MediaSourceConfig};
+use crate::{Error, MediaEvent, MediaMetadata, MediaState, Result};
 
 #[derive(thiserror::Error, Debug)]
 #[error(transparent)]
@@ -39,12 +39,6 @@ pub struct MprisMediaSource {
   _background_task: JoinHandle<()>,
 }
 
-impl MprisMediaSource {
-  pub fn is_closed(&self) -> bool {
-    self.cancel_token.load(Ordering::SeqCst)
-  }
-}
-
 impl MediaSource for MprisMediaSource {
   fn create(cfg: MediaSourceConfig) -> Result<Self> {
     if !cfg.system_enabled {
@@ -69,12 +63,20 @@ impl MediaSource for MprisMediaSource {
     })
   }
 
+  fn is_closed(&self) -> bool {
+    self.cancel_token.load(Ordering::SeqCst)
+  }
+
   fn poll(&self) -> Result<MediaMetadata> {
+    self.poll_guarded().map(|v| v.clone())
+  }
+
+  fn poll_guarded(&self) -> Result<RwLockReadGuard<MediaMetadata>> {
     if self.is_closed() {
       return Err(Error::Closed);
     }
 
-    Ok(self.metadata.read().unwrap().clone())
+    Ok(self.metadata.read().unwrap())
   }
 
   fn next(&self) -> Result<MediaEvent> {

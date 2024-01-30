@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::RwLockReadGuard;
 
 use serde::{Deserialize, Serialize};
 
@@ -95,7 +96,11 @@ pub struct MediaListener {
 pub trait MediaSource: Send + Sync + Sized {
   fn create(cfg: MediaSourceConfig) -> Result<Self>;
 
+  fn is_closed(&self) -> bool;
+
   fn poll(&self) -> Result<MediaMetadata>;
+
+  fn poll_guarded(&self) -> Result<RwLockReadGuard<MediaMetadata>>;
 
   fn next(&self) -> Result<MediaEvent>;
 }
