@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio_tungstenite::tungstenite;
 
+pub mod listener;
 pub mod platform;
 pub mod ws;
-pub mod listener;
 
 pub type TokioHandle = tokio::runtime::Handle;
 pub type TokioRuntime = tokio::runtime::Runtime;
@@ -26,7 +26,6 @@ pub enum Error {
   #[error("No media found or is currently opened")]
   NotExist,
 
-
   Io(#[from] std::io::Error),
 
   Tungstenite(#[from] tungstenite::Error),
@@ -34,7 +33,7 @@ pub enum Error {
   Other(#[from] anyhow::Error),
 
   #[error("{}, {}", 0.0, 0.1)]
-  FailedToCreateListener((Box<Self>, Box<Self>))
+  FailedToCreateListener((Box<Self>, Box<Self>)),
 }
 #[cfg(windows)]
 #[allow(overflowing_literals)]
@@ -126,6 +125,9 @@ pub struct MediaMetadata {
   /// Duration of what is currently playing
   #[serde_as(as = "::serde_with::DurationMilliSeconds<u64>")]
   pub duration: Duration,
+  #[serde_as(as = "::serde_with::DurationMilliSeconds<u64>")]
+  /// Elapsed duration of what is currently playing
+  pub elapsed: Duration,
   /// Title of what is currently playing
   pub title: String,
   /// Album of what is currently playing if available
@@ -142,6 +144,41 @@ pub struct MediaMetadata {
   /// Background art image data of what is currently playing if available
   /// (when you hit the "full screen" thing in the bottom-right corner of spotify)
   pub background: Option<MediaImage>,
+}
+
+impl MediaMetadata {
+  fn merge(self, fallback: MediaMetadata) -> MediaMetadata {
+    MediaMetadata {
+      uid: self.uid.or(fallback.uid),
+      uri: self.uri.or(fallback.uri),
+      state: self.state,
+      duration: if self.duration == Duration::default() {
+        fallback.duration
+      } else {
+        self.duration
+      },
+      elapsed: if self.elapsed == Duration::default() {
+        fallback.elapsed
+      } else {
+        self.elapsed
+      },
+      title: if self.title.is_empty() {
+        fallback.title
+      } else {
+        self.title
+      },
+      album: self.album.or(fallback.album),
+      artists: if self.artists.is_empty() {
+        fallback.artists
+      } else {
+        self.artists
+      },
+      cover_url: self.cover_url.or(fallback.cover_url),
+      cover: self.cover.or(fallback.cover),
+      background_url: self.background_url.or(fallback.background_url),
+      background: self.background.or(fallback.background),
+    }
+  }
 }
 
 /// Media Events

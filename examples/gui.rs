@@ -4,7 +4,7 @@ use eframe::egui;
 use eframe::egui::util::hash;
 use eframe::egui::{Image, ImageSource};
 
-use currently_playing::listener::{MediaListener, MediaListenerConfig};
+use currently_playing::listener::{MediaListenerImpl, MediaSourceConfig};
 
 fn main() -> Result<(), eframe::Error> {
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -32,19 +32,14 @@ fn main() -> Result<(), eframe::Error> {
       egui_extras::install_image_loaders(&cc.egui_ctx);
 
       Box::new(MyApp {
-        listener: MediaListener::new(MediaListenerConfig {
-          handle: None,
-          ws: Default::default(),
-          priority: Default::default(),
-          hybrid: true,
-        }).unwrap(),
+        listener: MediaListenerImpl::new(MediaSourceConfig::default()).unwrap(),
       })
     }),
   )
 }
 
 struct MyApp {
-  listener: MediaListener,
+  listener: MediaListenerImpl,
 }
 
 impl eframe::App for MyApp {

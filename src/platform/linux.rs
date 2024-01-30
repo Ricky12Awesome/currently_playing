@@ -122,13 +122,15 @@ impl MediaListener {
     }
 
     let metadata = self.metadata.read().await;
-    let state = self.state.read().await;
+    let state = { *self.state.read().await };
+    let elapsed = { *self.elapsed.read().await };
 
     Ok(MediaMetadata {
       uid: metadata.track_id().map(|s| s.to_string()),
       uri: metadata.url().map(|s| s.to_string()),
-      state: *state,
+      state,
       duration: metadata.length().unwrap_or_default(),
+      elapsed,
       title: metadata.title().unwrap_or_default().to_string(),
       album: metadata.album_name().map(|s| s.to_string()),
       artists: metadata
@@ -167,4 +169,8 @@ impl From<PlaybackStatus> for MediaState {
       PlaybackStatus::Stopped => Self::Stopped,
     }
   }
+}
+
+pub mod v2 {
+
 }

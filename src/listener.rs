@@ -8,14 +8,14 @@ pub type PlatformListener = crate::platform::MediaListener;
 pub type WebsocketListener = crate::ws::MediaListener;
 pub type WebsocketListenerPooled = crate::ws::MediaListenerPooled;
 
-use crate::{Error, MediaMetadata, Result, TokioHandle, TokioRuntime};
+use crate::{Error, MediaEvent, MediaMetadata, Result, TokioHandle, TokioRuntime};
 
 #[derive(Debug)]
 #[allow(unused)]
-pub struct MediaListener {
+pub struct MediaListenerImpl {
   handle: TokioHandle,
   _runtime: Option<Arc<TokioRuntime>>,
-  priority: Arc<RwLock<MediaListenerPriority>>,
+  priority: Arc<RwLock<MediaSourcePriority>>,
   hybrid: Arc<AtomicBool>,
   platform_listener: Option<PlatformListener>,
   websocket_listener: Option<WebsocketListenerPooled>,
@@ -24,7 +24,7 @@ pub struct MediaListener {
 #[derive(
   Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
 )]
-pub enum WebsocketMode {
+pub enum WebsocketAddr {
   Local(u16),
   Addr(SocketAddr),
 
@@ -35,23 +35,95 @@ pub enum WebsocketMode {
 #[derive(
   Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
 )]
-pub enum MediaListenerPriority {
+pub enum MediaSourcePriority {
   #[default]
   Websocket,
   System,
 }
 
-#[derive(Default, Debug)]
-pub struct MediaListenerConfig {
+#[derive(Debug, Clone)]
+pub struct MediaSourceConfig {
   pub handle: Option<TokioHandle>,
-  pub ws: WebsocketMode,
-  pub priority: MediaListenerPriority,
+  pub addr: WebsocketAddr,
+  pub priority: MediaSourcePriority,
+  pub update_rate: usize,
   pub hybrid: bool,
+  pub websocket_enabled: bool,
+  pub system_enabled: bool,
 }
 
-impl MediaListener {
+impl Default for MediaSourceConfig {
+  fn default() -> Self {
+    Self {
+      handle: None,
+      addr: WebsocketAddr::Default,
+      priority: MediaSourcePriority::Websocket,
+      update_rate: 30,
+      hybrid: true,
+      websocket_enabled: true,
+      system_enabled: true,
+    }
+  }
+}
+
+impl MediaSourceConfig {
+  fn new(handle: Option<TokioHandle>) -> Self {
+    Self {
+      handle,
+      hybrid: false,
+      websocket_enabled: false,
+      system_enabled: false,
+      ..Self::default()
+    }
+  }
+
+  fn set_handle(self, handle: Option<TokioHandle>) -> Self {
+    Self {
+      handle,
+      ..self
+    }
+  }
+
+  fn set_priority(self, priority: MediaSourcePriority) -> Self {
+    Self {
+      priority,
+      ..self
+    }
+  }
+
+  fn set_update_rate(self, update_rate: usize) -> Self {
+    Self {
+      update_rate,
+      ..self
+    }
+  }
+
+  fn set_hybrid(self, hybrid: bool) -> Self {
+    Self {
+      hybrid,
+      ..self
+    }
+  }
+
+  fn enable_system(self) -> Self {
+    Self {
+      system_enabled: true,
+      ..self
+    }
+  }
+
+  fn enable_websocket(self, addr: WebsocketAddr) -> Self {
+    Self {
+      addr,
+      websocket_enabled: true,
+      ..self
+    }
+  }
+}
+
+impl MediaListenerImpl {
   //noinspection DuplicatedCode
-  pub fn new(cfg: MediaListenerConfig) -> Result<Self> {
+  pub fn new(cfg: MediaSourceConfig) -> Result<Self> {
     let handle = cfg
       .handle
       .clone()
@@ -79,11 +151,11 @@ impl MediaListener {
   }
 
   //noinspection DuplicatedCode
-  pub async fn new_async(cfg: MediaListenerConfig) -> Result<Self> {
-    let websocket_listener = match cfg.ws {
-      WebsocketMode::Local(port) => WebsocketListener::bind_local(port).await,
-      WebsocketMode::Addr(addr) => WebsocketListener::bind(addr).await,
-      WebsocketMode::Default => WebsocketListener::bind_default().await,
+  pub async fn new_async(cfg: MediaSourceConfig) -> Result<Self> {
+    let websocket_listener = match cfg.addr {
+      WebsocketAddr::Local(port) => WebsocketListener::bind_local(port).await,
+      WebsocketAddr::Addr(addr) => WebsocketListener::bind(addr).await,
+      WebsocketAddr::Default => WebsocketListener::bind_default().await,
     };
 
     let platform_listener = PlatformListener::new_async().await;
@@ -120,11 +192,11 @@ impl MediaListener {
     })
   }
 
-  pub fn set_priority(&self, priority: MediaListenerPriority) {
+  pub fn set_priority(&self, priority: MediaSourcePriority) {
     *self.priority.write().unwrap() = priority;
   }
 
-  pub fn get_priority(&self) -> MediaListenerPriority {
+  pub fn get_priority(&self) -> MediaSourcePriority {
     *self.priority.read().unwrap()
   }
 
@@ -147,28 +219,28 @@ impl MediaListener {
     let hybrid = self.is_hybrid();
 
     match (priority, &self.websocket_listener, &self.platform_listener) {
-      (MediaListenerPriority::Websocket, Some(ws), Some(pl)) if hybrid => {
+      (MediaSourcePriority::Websocket, Some(ws), Some(pl)) if hybrid => {
         let metadata = ws.poll();
         let fallback = pl.poll(true)?;
 
-        let metadata = metadata_with_fallback(metadata, fallback);
+        let metadata = metadata.merge(fallback);
 
         Ok(metadata)
       }
-      (MediaListenerPriority::Websocket, Some(ws), _) => {
+      (MediaSourcePriority::Websocket, Some(ws), _) => {
         let metadata = ws.poll();
 
         Ok(metadata)
       }
-      (MediaListenerPriority::System, Some(ws), Some(pl)) if hybrid => {
+      (MediaSourcePriority::System, Some(ws), Some(pl)) if hybrid => {
         let metadata = pl.poll(true)?;
         let fallback = ws.poll();
 
-        let metadata = metadata_with_fallback(metadata, fallback);
+        let metadata = metadata.merge(fallback);
 
         Ok(metadata)
       }
-      (MediaListenerPriority::System, _, Some(pl)) => pl.poll(true),
+      (MediaSourcePriority::System, _, Some(pl)) => pl.poll(true),
       _ => unreachable!(),
     }
   }
@@ -178,7 +250,7 @@ impl MediaListener {
     let hybrid = self.is_hybrid();
 
     match (priority, &self.websocket_listener, &self.platform_listener) {
-      (MediaListenerPriority::Websocket, Some(ws), Some(pl)) if hybrid => {
+      (MediaSourcePriority::Websocket, Some(ws), Some(pl)) if hybrid => {
         let elapsed = ws.poll_elapsed();
         let fallback = pl.poll_elapsed(true)?;
 
@@ -190,12 +262,12 @@ impl MediaListener {
 
         Ok(elapsed)
       }
-      (MediaListenerPriority::Websocket, Some(ws), _) => {
+      (MediaSourcePriority::Websocket, Some(ws), _) => {
         let elapsed = ws.poll_elapsed();
 
         Ok(elapsed)
       }
-      (MediaListenerPriority::System, Some(ws), Some(pl)) if hybrid => {
+      (MediaSourcePriority::System, Some(ws), Some(pl)) if hybrid => {
         let elapsed = pl.poll_elapsed(true)?;
         let fallback = ws.poll_elapsed();
 
@@ -207,36 +279,17 @@ impl MediaListener {
 
         Ok(elapsed)
       }
-      (MediaListenerPriority::System, _, Some(pl)) => pl.poll_elapsed(true),
+      (MediaSourcePriority::System, _, Some(pl)) => pl.poll_elapsed(true),
       _ => unreachable!(),
     }
   }
 }
 
-fn metadata_with_fallback(metadata: MediaMetadata, fallback: MediaMetadata) -> MediaMetadata {
-  MediaMetadata {
-    uid: metadata.uid.or(fallback.uid),
-    uri: metadata.uri.or(fallback.uri),
-    state: metadata.state,
-    duration: if metadata.duration == Duration::default() {
-      fallback.duration
-    } else {
-      metadata.duration
-    },
-    title: if metadata.title.is_empty() {
-      fallback.title
-    } else {
-      metadata.title
-    },
-    album: metadata.album.or(fallback.album),
-    artists: if metadata.artists.is_empty() {
-      fallback.artists
-    } else {
-      metadata.artists
-    },
-    cover_url: metadata.cover_url.or(fallback.cover_url),
-    cover: metadata.cover.or(fallback.cover),
-    background_url: metadata.background_url.or(fallback.background_url),
-    background: metadata.background.or(fallback.background),
-  }
+
+pub trait MediaSource: Send + Sync {
+  fn create(cfg: MediaSourceConfig) -> Self;
+
+  fn poll(&self) -> Result<MediaMetadata>;
+
+  fn next(&self) -> Result<MediaEvent>;
 }
