@@ -1,15 +1,15 @@
 #![cfg(target_os = "linux")]
 
-use mpris::{Metadata, PlaybackStatus, PlayerFinder};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use tokio::runtime::{Builder, Runtime};
 
-use crate::listener::{MediaSource, MediaSourceConfig};
+use mpris::{PlaybackStatus, PlayerFinder};
+
 use crate::{Error, MediaEvent, MediaMetadata, MediaState, Result};
+use crate::listener::{MediaSource, MediaSourceConfig};
 
 #[derive(thiserror::Error, Debug)]
 #[error(transparent)]
@@ -56,12 +56,8 @@ impl MediaSource for MprisMediaSource {
     let metadata = Arc::new(RwLock::new(MediaMetadata::default()));
     let (send, recv) = std::sync::mpsc::sync_channel(0);
 
-    let _background_task = spawn_background_task(
-      update_rate,
-      cancel_token.clone(),
-      metadata.clone(),
-      send
-    );
+    let _background_task =
+      spawn_background_task(update_rate, cancel_token.clone(), metadata.clone(), send);
 
     let recv = Arc::new(Mutex::new(recv));
 
@@ -75,7 +71,7 @@ impl MediaSource for MprisMediaSource {
 
   fn poll(&self) -> Result<MediaMetadata> {
     if self.is_closed() {
-      return Err(Error::Closed)
+      return Err(Error::Closed);
     }
 
     Ok(self.metadata.read().unwrap().clone())
@@ -83,7 +79,7 @@ impl MediaSource for MprisMediaSource {
 
   fn next(&self) -> Result<MediaEvent> {
     if self.is_closed() {
-      return Err(Error::Closed)
+      return Err(Error::Closed);
     }
 
     let timeout = Duration::from_millis(1000);
@@ -100,43 +96,32 @@ impl Drop for MprisMediaSource {
   }
 }
 
-
 fn spawn_background_task(
   update_rate: u64,
   cancel_token: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
   send: SyncSender<MediaEvent>,
 ) -> JoinHandle<()> {
-  std::thread::spawn(move || {
-    let runtime = Builder::new_multi_thread()
-      .worker_threads(2)
-      .enable_all()
-      .build()
-      .unwrap();
+  std::thread::spawn(move || loop {
+    let result = background_task(
+      update_rate,
+      cancel_token.clone(),
+      metadata.clone(),
+      send.clone(),
+    );
 
-    loop {
-      let task = background_task(
-        update_rate,
-        cancel_token.clone(),
-        metadata.clone(),
-        send.clone(),
-      );
-
-      let result = runtime.block_on(task);
-
-      match result {
-        Ok(_) => break,
-        Err(_) => {
-          std::thread::sleep(Duration::from_millis(1000));
-          continue;
-        }
+    match result {
+      Ok(_) => break,
+      Err(_) => {
+        std::thread::sleep(Duration::from_millis(1000));
+        continue;
       }
     }
   })
 }
 
 #[allow(clippy::await_holding_lock)]
-async fn background_task(
+fn background_task(
   update_rate: u64,
   cancel_token: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
@@ -157,7 +142,7 @@ async fn background_task(
       player = finder.find_active().map_err(MprisError::from)?;
 
       if !player.is_running() {
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        std::thread::sleep(Duration::from_millis(1000));
         continue;
       }
     };
@@ -209,7 +194,7 @@ async fn background_task(
       let _ = send.try_send(event);
     }
 
-    tokio::time::sleep(wait).await;
+    std::thread::sleep(wait);
   }
 
   Ok(())

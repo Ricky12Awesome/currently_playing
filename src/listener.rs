@@ -88,6 +88,10 @@ impl MediaSourceConfig {
   }
 }
 
+pub struct MediaListener {
+
+}
+
 pub trait MediaSource: Send + Sync + Sized {
   fn create(cfg: MediaSourceConfig) -> Result<Self>;
 
