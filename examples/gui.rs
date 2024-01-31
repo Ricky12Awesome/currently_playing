@@ -1,11 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use eframe::egui;
-use eframe::egui::util::hash;
 use eframe::egui::{Align, Color32, Image, ImageSource, Layout};
+use eframe::egui::util::hash;
 
-use currently_playing::listener::{MediaSource, MediaSourceConfig};
-use currently_playing::ws::WebsocketMediaSourceBackground;
+use currently_playing::listener::{MediaListener, MediaSource, MediaSourceConfig};
 
 fn main() -> Result<(), eframe::Error> {
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -33,14 +32,14 @@ fn main() -> Result<(), eframe::Error> {
       egui_extras::install_image_loaders(&cc.egui_ctx);
 
       Box::new(MyApp {
-        listener: WebsocketMediaSourceBackground::create(MediaSourceConfig::default()).unwrap(),
+        listener: MediaListener::create(MediaSourceConfig::default()).unwrap(),
       })
     }),
   )
 }
 
 struct MyApp {
-  listener: WebsocketMediaSourceBackground,
+  listener: MediaListener,
 }
 
 impl eframe::App for MyApp {
@@ -54,18 +53,7 @@ impl eframe::App for MyApp {
         return;
       };
 
-      let c = Color32::from_gray(254);
-      ui.colored_label(c, format!("Title: {}", metadata.title));
-      ui.colored_label(c, format!("State: {:?}", metadata.state));
-      ui.colored_label(c, format!("Length: {:?}", metadata.duration));
-      ui.colored_label(c, format!("Elapsed: {:?}", metadata.elapsed));
-      ui.colored_label(c, format!("Artist: {:?}", metadata.artists));
-      ui.colored_label(c, format!("Album: {:?}", metadata.album));
-      ui.colored_label(c, format!("Cover: {:?}", metadata.cover));
-      ui.colored_label(c, format!("Cover (URL): {:?}", metadata.cover_url));
-      ui.colored_label(c, format!("Background: {:?}", metadata.background));
-      #[rustfmt::skip]
-      ui.colored_label(c,format!("Background (URL): {:?}", metadata.background_url));
+      let cover_display = format!("Cover: {:?}", metadata.cover);
 
       ui.with_layout(Layout::left_to_right(Align::LEFT), |ui| {
         if let Some(cover) = metadata.cover {
@@ -79,15 +67,15 @@ impl eframe::App for MyApp {
           ui.add_sized([512., 512.], image);
         }
 
-        if let Some(cover) = metadata.cover_url {
-          let source = ImageSource::Uri(cover.into());
+        if let Some(cover) = metadata.cover_url.as_ref() {
+          let source = ImageSource::Uri(cover.to_string().into());
           let image = Image::new(source);
 
           ui.add_sized([512., 512.], image);
         }
 
-        if let Some(background) = &metadata.background_url {
-          let source = ImageSource::Uri(background.into());
+        if let Some(background) = &metadata.background_url.as_ref() {
+          let source = ImageSource::Uri(background.to_string().into());
           let image = Image::new(source);
 
           let size = [ui.available_width(), 512.].into();
@@ -97,6 +85,20 @@ impl eframe::App for MyApp {
           }
         }
       });
+
+      let c = Color32::from_gray(254);
+      ui.colored_label(c, format!("Title: {}", metadata.title));
+      ui.colored_label(c, format!("State: {:?}", metadata.state));
+      ui.colored_label(c, format!("Length: {:?}", metadata.duration));
+      ui.colored_label(c, format!("Elapsed: {:?}", metadata.elapsed));
+      ui.colored_label(c, format!("Artist: {:?}", metadata.artists));
+      ui.colored_label(c, format!("Album: {:?}", metadata.album));
+      ui.colored_label(c, cover_display);
+      ui.colored_label(c, format!("Cover (URL): {:?}", metadata.cover_url));
+      ui.colored_label(c, format!("Background: {:?}", metadata.background));
+      #[rustfmt::skip]
+      ui.colored_label(c,format!("Background (URL): {:?}", metadata.background_url));
+
     });
 
     ctx.request_repaint();

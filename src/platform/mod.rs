@@ -14,6 +14,9 @@ pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+#[cfg(target_os = "linux")]
+pub type SystemMediaSource = MprisMediaSource;
+
 pub(crate) struct ForceSendSync<T>(pub T);
 
 impl<T> Debug for ForceSendSync<T>

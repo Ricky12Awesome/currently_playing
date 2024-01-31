@@ -3,9 +3,9 @@
 use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -13,11 +13,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder;
-use tokio_tungstenite::{accept_async, WebSocketStream};
 use tokio_tungstenite::tungstenite::{Error, Message};
+use tokio_tungstenite::{accept_async, WebSocketStream};
 
-use crate::{MediaEvent, MediaMetadata};
 use crate::listener::{MediaSource, MediaSourceConfig, WebsocketAddr};
+use crate::{MediaEvent, MediaMetadata};
 
 /// Wraps around [TcpListener]
 ///
@@ -147,7 +147,9 @@ impl WebsocketMediaSource {
 #[derive(Debug)]
 #[allow(unused)]
 pub struct WebsocketMediaSourceBackground {
+  timeout: Duration,
   cancel_token: Arc<AtomicBool>,
+  is_running: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
   recv: Arc<Mutex<Receiver<MediaEvent>>>,
   _background_task: JoinHandle<()>,
@@ -160,12 +162,14 @@ impl MediaSource for WebsocketMediaSourceBackground {
     }
 
     let cancel_token = Arc::new(AtomicBool::new(false));
+    let is_running = Arc::new(AtomicBool::new(false));
     let metadata = Arc::new(RwLock::new(MediaMetadata::default()));
     let (send, recv) = std::sync::mpsc::sync_channel(0);
 
     let background_task = spawn_background_task(
       cfg.addr,
       cancel_token.clone(),
+      is_running.clone(),
       metadata.clone(),
       send.clone(),
     );
@@ -173,7 +177,9 @@ impl MediaSource for WebsocketMediaSourceBackground {
     let recv = Arc::new(Mutex::new(recv));
 
     Ok(Self {
+      timeout: cfg.timeout,
       cancel_token,
+      is_running,
       metadata,
       recv,
       _background_task: background_task,
@@ -182,6 +188,10 @@ impl MediaSource for WebsocketMediaSourceBackground {
 
   fn is_closed(&self) -> bool {
     self.cancel_token.load(Ordering::SeqCst)
+  }
+
+  fn is_running(&self) -> bool {
+    self.is_running.load(Ordering::SeqCst)
   }
 
   fn poll(&self) -> crate::Result<MediaMetadata> {
@@ -201,17 +211,23 @@ impl MediaSource for WebsocketMediaSourceBackground {
       return Err(crate::Error::Closed);
     }
 
-    let timeout = Duration::from_millis(1000);
     let recv = self.recv.lock().unwrap();
-    let event = recv.recv_timeout(timeout)?;
+    let event = recv.recv_timeout(self.timeout)?;
 
     Ok(event)
+  }
+}
+
+impl Drop for WebsocketMediaSourceBackground {
+  fn drop(&mut self) {
+    self.cancel_token.store(true, Ordering::SeqCst)
   }
 }
 
 fn spawn_background_task(
   addr: WebsocketAddr,
   cancel_token: Arc<AtomicBool>,
+  is_running: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
   send: SyncSender<MediaEvent>,
 ) -> JoinHandle<()> {
@@ -232,11 +248,20 @@ fn spawn_background_task(
 
       match result {
         Ok(source) => {
-          let task = background_task(source, cancel_token.clone(), metadata.clone(), send.clone());
+          let task = background_task(
+            source,
+            cancel_token.clone(),
+            is_running.clone(),
+            metadata.clone(),
+            send.clone(),
+          );
 
           runtime.block_on(task);
         }
-        Err(_) => std::thread::sleep(Duration::from_millis(1000)),
+        Err(_) => {
+          is_running.store(false, Ordering::SeqCst);
+          std::thread::sleep(Duration::from_millis(1000));
+        }
       }
     }
   })
@@ -245,6 +270,7 @@ fn spawn_background_task(
 async fn background_task(
   source: WebsocketMediaSource,
   cancel_token: Arc<AtomicBool>,
+  is_running: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
   send: SyncSender<MediaEvent>,
 ) {
@@ -254,10 +280,17 @@ async fn background_task(
       return;
     };
 
-    while let Some(Ok(event)) = connection.next().await {
+    is_running.store(true, Ordering::SeqCst);
+
+    while let Some(event) = connection.next().await {
       if cancel_token.load(Ordering::SeqCst) {
         let _ = connection.close().await;
         return;
+      };
+
+      let Ok(event) = event else {
+        is_running.store(false, Ordering::SeqCst);
+        continue;
       };
 
       let _ = send.try_send(event.clone());
@@ -274,5 +307,7 @@ async fn background_task(
         }
       }
     }
+
+    is_running.store(false, Ordering::SeqCst);
   }
 }

@@ -33,7 +33,9 @@ impl From<PlaybackStatus> for MediaState {
 
 #[derive(Debug)]
 pub struct MprisMediaSource {
+  timeout: Duration,
   cancel_token: Arc<AtomicBool>,
+  is_running: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
   recv: Arc<Mutex<Receiver<MediaEvent>>>,
   _background_task: JoinHandle<()>,
@@ -47,16 +49,19 @@ impl MediaSource for MprisMediaSource {
 
     let update_rate = cfg.update_rate;
     let cancel_token = Arc::new(AtomicBool::new(false));
+    let is_running = Arc::new(AtomicBool::new(false));
     let metadata = Arc::new(RwLock::new(MediaMetadata::default()));
     let (send, recv) = std::sync::mpsc::sync_channel(0);
 
     let _background_task =
-      spawn_background_task(update_rate, cancel_token.clone(), metadata.clone(), send);
+      spawn_background_task(update_rate, cancel_token.clone(), is_running.clone(), metadata.clone(), send);
 
     let recv = Arc::new(Mutex::new(recv));
 
     Ok(Self {
+      timeout: cfg.timeout,
       cancel_token,
+      is_running,
       metadata,
       recv,
       _background_task,
@@ -65,6 +70,10 @@ impl MediaSource for MprisMediaSource {
 
   fn is_closed(&self) -> bool {
     self.cancel_token.load(Ordering::SeqCst)
+  }
+
+  fn is_running(&self) -> bool {
+    self.is_running.load(Ordering::SeqCst)
   }
 
   fn poll(&self) -> Result<MediaMetadata> {
@@ -84,9 +93,8 @@ impl MediaSource for MprisMediaSource {
       return Err(Error::Closed);
     }
 
-    let timeout = Duration::from_millis(1000);
     let recv = self.recv.lock().unwrap();
-    let event = recv.recv_timeout(timeout)?;
+    let event = recv.recv_timeout(self.timeout)?;
 
     Ok(event)
   }
@@ -101,6 +109,7 @@ impl Drop for MprisMediaSource {
 fn spawn_background_task(
   update_rate: u64,
   cancel_token: Arc<AtomicBool>,
+  is_running: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
   send: SyncSender<MediaEvent>,
 ) -> JoinHandle<()> {
@@ -108,6 +117,7 @@ fn spawn_background_task(
     let result = background_task(
       update_rate,
       cancel_token.clone(),
+      is_running.clone(),
       metadata.clone(),
       send.clone(),
     );
@@ -115,6 +125,7 @@ fn spawn_background_task(
     match result {
       Ok(_) => break,
       Err(_) => {
+        is_running.store(false, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(1000));
         continue;
       }
@@ -126,6 +137,7 @@ fn spawn_background_task(
 fn background_task(
   update_rate: u64,
   cancel_token: Arc<AtomicBool>,
+  is_running: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
   send: SyncSender<MediaEvent>,
 ) -> Result<()> {
@@ -139,6 +151,8 @@ fn background_task(
     if cancel_token.load(Ordering::SeqCst) {
       break;
     }
+
+    is_running.store(player.is_running(), Ordering::SeqCst);
 
     if !player.is_running() {
       player = finder.find_active().map_err(MprisError::from)?;

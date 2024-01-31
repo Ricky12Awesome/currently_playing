@@ -1,9 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::RwLockReadGuard;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MediaEvent, MediaMetadata, Result};
+use crate::{Error, MediaEvent, MediaMetadata, MediaState, Result};
+use crate::platform::SystemMediaSource;
+use crate::ws::WebsocketMediaSourceBackground;
 
 #[derive(
   Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
@@ -29,6 +32,7 @@ pub enum MediaSourcePriority {
 pub struct MediaSourceConfig {
   pub addr: WebsocketAddr,
   pub priority: MediaSourcePriority,
+  pub timeout: Duration,
   pub update_rate: u64,
   pub hybrid: bool,
   pub websocket_enabled: bool,
@@ -40,6 +44,7 @@ impl Default for MediaSourceConfig {
     Self {
       addr: WebsocketAddr::Default,
       priority: MediaSourcePriority::Websocket,
+      timeout: Duration::from_millis(5000),
       update_rate: 30,
       hybrid: true,
       websocket_enabled: true,
@@ -89,14 +94,153 @@ impl MediaSourceConfig {
   }
 }
 
+#[derive(Debug)]
 pub struct MediaListener {
+  system: Option<SystemMediaSource>,
+  websocket: Option<WebsocketMediaSourceBackground>,
+  cfg: MediaSourceConfig,
+}
 
+impl MediaSource for MediaListener {
+  fn create(cfg: MediaSourceConfig) -> Result<Self> {
+    if !cfg.system_enabled && !cfg.websocket_enabled {
+      return Err(Error::NotEnabled);
+    }
+
+    let system = match cfg.system_enabled {
+      true => {
+        let source = SystemMediaSource::create(cfg.clone())?;
+        Some(source)
+      }
+      false => None,
+    };
+
+    let websocket = match cfg.system_enabled {
+      true => {
+        let source = WebsocketMediaSourceBackground::create(cfg.clone())?;
+        Some(source)
+      }
+      false => None,
+    };
+
+    Ok(Self {
+      system,
+      websocket,
+      cfg,
+    })
+  }
+
+  fn is_closed(&self) -> bool {
+    let system = self
+      .system
+      .as_ref()
+      .map(|s| s.is_closed())
+      .unwrap_or_default();
+
+    let websocket = self
+      .websocket
+      .as_ref()
+      .map(|s| s.is_closed())
+      .unwrap_or_default();
+
+    system && websocket
+  }
+
+  fn is_running(&self) -> bool {
+    let system = self
+      .system
+      .as_ref()
+      .map(|s| s.is_running())
+      .unwrap_or_default();
+
+    let websocket = self
+      .websocket
+      .as_ref()
+      .map(|s| s.is_running())
+      .unwrap_or_default();
+
+    system || websocket
+  }
+
+  fn poll(&self) -> Result<MediaMetadata> {
+    match (self.cfg.priority, &self.system, &self.websocket) {
+      (MediaSourcePriority::System, Some(system), Some(websocket)) => {
+        let system = system.poll()?;
+        let websocket = websocket.poll()?;
+
+        match (system.state, websocket.state) {
+          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => Ok(websocket),
+          _ => Ok(system),
+        }
+      }
+      (MediaSourcePriority::System, Some(system), None) => system.poll(),
+      (MediaSourcePriority::System, None, Some(websocket)) => websocket.poll(),
+      (MediaSourcePriority::Websocket, Some(system), Some(websocket)) => {
+        let system = system.poll()?;
+        let websocket = websocket.poll()?;
+
+        match (system.state, websocket.state) {
+          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => Ok(system),
+          _ => Ok(websocket),
+        }
+      }
+      (MediaSourcePriority::Websocket, None, Some(websocket)) => websocket.poll(),
+      (MediaSourcePriority::Websocket, Some(system), None) => system.poll(),
+      _ => unreachable!(),
+    }
+  }
+
+  fn poll_guarded(&self) -> Result<RwLockReadGuard<MediaMetadata>> {
+    match (self.cfg.priority, &self.system, &self.websocket) {
+      (MediaSourcePriority::System, Some(system), Some(websocket)) => {
+        let system = system.poll_guarded()?;
+        let websocket = websocket.poll_guarded()?;
+
+        match (system.state, websocket.state) {
+          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => Ok(websocket),
+          _ => Ok(system),
+        }
+      }
+      (MediaSourcePriority::System, Some(system), None) => system.poll_guarded(),
+      (MediaSourcePriority::System, None, Some(websocket)) => websocket.poll_guarded(),
+      (MediaSourcePriority::Websocket, Some(system), Some(websocket)) => {
+        let system = system.poll_guarded()?;
+        let websocket = websocket.poll_guarded()?;
+
+        match (system.state, websocket.state) {
+          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => Ok(system),
+          _ => Ok(websocket),
+        }
+      }
+      (MediaSourcePriority::Websocket, None, Some(websocket)) => websocket.poll_guarded(),
+      (MediaSourcePriority::Websocket, Some(system), None) => system.poll_guarded(),
+      _ => unreachable!(),
+    }
+  }
+
+  fn next(&self) -> Result<MediaEvent> {
+    match (self.cfg.priority, &self.system, &self.websocket) {
+      (MediaSourcePriority::System, Some(system), Some(websocket)) => {
+        system.next().or_else(|_| websocket.next())
+      }
+      (MediaSourcePriority::System, Some(system), None) => system.next(),
+      (MediaSourcePriority::System, None, Some(websocket)) => websocket.next(),
+      (MediaSourcePriority::Websocket, Some(system), Some(websocket)) => {
+        websocket.next().or_else(|_| system.next())
+      }
+      (MediaSourcePriority::Websocket, None, Some(websocket)) => websocket.next(),
+      (MediaSourcePriority::Websocket, Some(system), None) => system.next(),
+      _ => unreachable!(),
+    }
+  }
 }
 
 pub trait MediaSource: Send + Sync + Sized {
   fn create(cfg: MediaSourceConfig) -> Result<Self>;
 
   fn is_closed(&self) -> bool;
+
+  fn is_running(&self) -> bool;
 
   fn poll(&self) -> Result<MediaMetadata>;
 
