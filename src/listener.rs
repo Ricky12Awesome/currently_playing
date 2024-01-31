@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
-use std::sync::RwLockReadGuard;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, MediaEvent, MediaMetadata, MediaState, Result};
 use crate::platform::SystemMediaSource;
 use crate::ws::WebsocketMediaSourceBackground;
+use crate::{Error, MediaEvent, MediaMetadata, MediaState, Result};
 
 #[derive(
   Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
@@ -98,7 +98,14 @@ impl MediaSourceConfig {
 pub struct MediaListener {
   system: Option<SystemMediaSource>,
   websocket: Option<WebsocketMediaSourceBackground>,
+  last_played: Arc<RwLock<LastPlayed>>,
   cfg: MediaSourceConfig,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum LastPlayed {
+  Websocket,
+  System,
 }
 
 impl MediaSource for MediaListener {
@@ -123,9 +130,17 @@ impl MediaSource for MediaListener {
       false => None,
     };
 
+    let last_played = match cfg.priority {
+      MediaSourcePriority::Websocket => LastPlayed::Websocket,
+      MediaSourcePriority::System => LastPlayed::System,
+    };
+
+    let last_played = Arc::new(RwLock::new(last_played));
+
     Ok(Self {
       system,
       websocket,
+      last_played,
       cfg,
     })
   }
@@ -169,8 +184,22 @@ impl MediaSource for MediaListener {
         let websocket = websocket.poll()?;
 
         match (system.state, websocket.state) {
-          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => Ok(websocket),
-          _ => Ok(system),
+          (MediaState::Playing, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::System;
+            Ok(system)
+          },
+          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::Websocket;
+            Ok(websocket)
+          },
+          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => {
+            *self.last_played.write().unwrap() = LastPlayed::System;
+            Ok(system)
+          },
+          _ => match *self.last_played.read().unwrap() {
+            LastPlayed::Websocket => Ok(websocket),
+            LastPlayed::System => Ok(system),
+          }
         }
       }
       (MediaSourcePriority::System, Some(system), None) => system.poll(),
@@ -180,8 +209,22 @@ impl MediaSource for MediaListener {
         let websocket = websocket.poll()?;
 
         match (system.state, websocket.state) {
-          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => Ok(system),
-          _ => Ok(websocket),
+          (MediaState::Playing, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::Websocket;
+            Ok(websocket)
+          },
+          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => {
+            *self.last_played.write().unwrap() = LastPlayed::System;
+            Ok(system)
+          },
+          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::Websocket;
+            Ok(websocket)
+          },
+          _ => match *self.last_played.read().unwrap() {
+            LastPlayed::Websocket => Ok(websocket),
+            LastPlayed::System => Ok(system),
+          }
         }
       }
       (MediaSourcePriority::Websocket, None, Some(websocket)) => websocket.poll(),
@@ -197,8 +240,22 @@ impl MediaSource for MediaListener {
         let websocket = websocket.poll_guarded()?;
 
         match (system.state, websocket.state) {
-          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => Ok(websocket),
-          _ => Ok(system),
+          (MediaState::Playing, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::System;
+            Ok(system)
+          },
+          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::Websocket;
+            Ok(websocket)
+          },
+          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => {
+            *self.last_played.write().unwrap() = LastPlayed::System;
+            Ok(system)
+          },
+          _ => match *self.last_played.read().unwrap() {
+            LastPlayed::Websocket => Ok(websocket),
+            LastPlayed::System => Ok(system),
+          }
         }
       }
       (MediaSourcePriority::System, Some(system), None) => system.poll_guarded(),
@@ -208,8 +265,22 @@ impl MediaSource for MediaListener {
         let websocket = websocket.poll_guarded()?;
 
         match (system.state, websocket.state) {
-          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => Ok(system),
-          _ => Ok(websocket),
+          (MediaState::Playing, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::System;
+            Ok(system)
+          },
+          (MediaState::Playing, MediaState::Stopped | MediaState::Paused) => {
+            *self.last_played.write().unwrap() = LastPlayed::System;
+            Ok(system)
+          },
+          (MediaState::Stopped | MediaState::Paused, MediaState::Playing) => {
+            *self.last_played.write().unwrap() = LastPlayed::Websocket;
+            Ok(websocket)
+          },
+          _ => match *self.last_played.read().unwrap() {
+            LastPlayed::Websocket => Ok(websocket),
+            LastPlayed::System => Ok(system),
+          }
         }
       }
       (MediaSourcePriority::Websocket, None, Some(websocket)) => websocket.poll_guarded(),
