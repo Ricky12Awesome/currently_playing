@@ -3,18 +3,21 @@
 use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::Runtime;
-use tokio_tungstenite::tungstenite::{Error, Message};
+use tokio::runtime::Builder;
 use tokio_tungstenite::{accept_async, WebSocketStream};
+use tokio_tungstenite::tungstenite::{Error, Message};
 
 use crate::{MediaEvent, MediaMetadata};
+use crate::listener::{MediaSource, MediaSourceConfig, WebsocketAddr};
 
 /// Wraps around [TcpListener]
 ///
@@ -40,7 +43,7 @@ use crate::{MediaEvent, MediaMetadata};
 /// }
 /// ```
 #[derive(Debug)]
-pub struct MediaListener {
+pub struct WebsocketMediaSource {
   pub listener: TcpListener,
 }
 
@@ -79,6 +82,10 @@ impl MediaConnection {
     self.ws.send(Message::Text(text)).await
   }
 
+  pub async fn close(&mut self) -> Result<(), Error> {
+    self.ws.close(None).await
+  }
+
   /// Waits for the next message to be received
   pub async fn next(&mut self) -> Option<Result<MediaEvent, Error>> {
     let message = self.ws.next().await?;
@@ -98,7 +105,7 @@ impl MediaConnection {
   }
 }
 
-impl MediaListener {
+impl WebsocketMediaSource {
   /// Binds to 127.0.0.1:19532
   pub async fn bind_default() -> std::io::Result<Self> {
     Self::bind_local(19532).await
@@ -118,6 +125,15 @@ impl MediaListener {
     Ok(Self { listener })
   }
 
+  /// Binds from [WebsocketAddr]
+  pub async fn bind_from(value: WebsocketAddr) -> std::io::Result<Self> {
+    match value {
+      WebsocketAddr::Local(port) => Self::bind_local(port).await,
+      WebsocketAddr::Addr(addr) => Self::bind(addr).await,
+      WebsocketAddr::Default => Self::bind_default().await,
+    }
+  }
+
   /// Establishes a websocket connection to the client
   pub async fn get_connection(&self) -> Result<MediaConnection, Error> {
     let listener = self.listener.accept().await;
@@ -130,65 +146,131 @@ impl MediaListener {
 
 #[derive(Debug)]
 #[allow(unused)]
-pub struct MediaListenerPooled {
-  listener: Arc<MediaListener>,
-  runtime: Arc<Runtime>,
+pub struct WebsocketMediaSourceBackground {
+  cancel_token: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
-  elapsed: Arc<RwLock<Duration>>,
-  background: JoinHandle<()>,
+  recv: Arc<Mutex<Receiver<MediaEvent>>>,
+  _background_task: JoinHandle<()>,
 }
 
-impl MediaListenerPooled {
-  pub fn new(listener: MediaListener) -> std::io::Result<Self> {
-    let listener = Arc::new(listener);
-    let runtime = Runtime::new()?;
-    let runtime = Arc::new(runtime);
-    let metadata = Arc::new(RwLock::new(MediaMetadata::default()));
-    let elapsed = Arc::new(RwLock::new(Duration::default()));
-    let _listener = listener.clone();
-    let _runtime = runtime.clone();
-    let _metadata = metadata.clone();
-    let _elapsed = elapsed.clone();
+impl MediaSource for WebsocketMediaSourceBackground {
+  fn create(cfg: MediaSourceConfig) -> crate::Result<Self> {
+    if !cfg.websocket_enabled {
+      return Err(crate::Error::NotEnabled);
+    }
 
-    let background = std::thread::spawn(move || {
-      _runtime.block_on(background_task(_listener, _metadata, _elapsed));
-    });
+    let cancel_token = Arc::new(AtomicBool::new(false));
+    let metadata = Arc::new(RwLock::new(MediaMetadata::default()));
+    let (send, recv) = std::sync::mpsc::sync_channel(0);
+
+    let background_task = spawn_background_task(
+      cfg.addr,
+      cancel_token.clone(),
+      metadata.clone(),
+      send.clone(),
+    );
+
+    let recv = Arc::new(Mutex::new(recv));
 
     Ok(Self {
-      listener,
-      runtime,
+      cancel_token,
       metadata,
-      elapsed,
-      background,
+      recv,
+      _background_task: background_task,
     })
   }
 
-  pub fn poll(&self) -> MediaMetadata {
-    self.metadata.read().unwrap().clone()
+  fn is_closed(&self) -> bool {
+    self.cancel_token.load(Ordering::SeqCst)
   }
 
-  pub fn poll_elapsed(&self) -> Duration {
-    *self.elapsed.read().unwrap()
+  fn poll(&self) -> crate::Result<MediaMetadata> {
+    self.poll_guarded().map(|v| v.clone())
+  }
+
+  fn poll_guarded(&self) -> crate::Result<RwLockReadGuard<MediaMetadata>> {
+    if self.is_closed() {
+      return Err(crate::Error::Closed);
+    }
+
+    Ok(self.metadata.read().unwrap())
+  }
+
+  fn next(&self) -> crate::Result<MediaEvent> {
+    if self.is_closed() {
+      return Err(crate::Error::Closed);
+    }
+
+    let timeout = Duration::from_millis(1000);
+    let recv = self.recv.lock().unwrap();
+    let event = recv.recv_timeout(timeout)?;
+
+    Ok(event)
   }
 }
 
-async fn background_task(
-  listener: Arc<MediaListener>,
+fn spawn_background_task(
+  addr: WebsocketAddr,
+  cancel_token: Arc<AtomicBool>,
   metadata: Arc<RwLock<MediaMetadata>>,
-  elapsed: Arc<RwLock<Duration>>,
+  send: SyncSender<MediaEvent>,
+) -> JoinHandle<()> {
+  std::thread::spawn(move || {
+    let runtime = Builder::new_multi_thread()
+      .worker_threads(4)
+      .enable_all()
+      .build()
+      .unwrap();
+
+    loop {
+      if cancel_token.load(Ordering::SeqCst) {
+        return;
+      };
+
+      let source = WebsocketMediaSource::bind_from(addr);
+      let result = runtime.block_on(source);
+
+      match result {
+        Ok(source) => {
+          let task = background_task(source, cancel_token.clone(), metadata.clone(), send.clone());
+
+          runtime.block_on(task);
+        }
+        Err(_) => std::thread::sleep(Duration::from_millis(1000)),
+      }
+    }
+  })
+}
+
+async fn background_task(
+  source: WebsocketMediaSource,
+  cancel_token: Arc<AtomicBool>,
+  metadata: Arc<RwLock<MediaMetadata>>,
+  send: SyncSender<MediaEvent>,
 ) {
-  while let Ok(mut connection) = listener.get_connection().await {
+  while let Ok(mut connection) = source.get_connection().await {
+    if cancel_token.load(Ordering::SeqCst) {
+      let _ = connection.close().await;
+      return;
+    };
+
     while let Some(Ok(event)) = connection.next().await {
+      if cancel_token.load(Ordering::SeqCst) {
+        let _ = connection.close().await;
+        return;
+      };
+
+      let _ = send.try_send(event.clone());
+
       match event {
         MediaEvent::MediaChanged(info) => {
           *metadata.write().unwrap() = info;
-        },
+        }
         MediaEvent::StateChanged(state) => {
           metadata.write().unwrap().state = state;
-        },
+        }
         MediaEvent::ProgressChanged(new_elapsed) => {
           metadata.write().unwrap().elapsed = new_elapsed;
-          *elapsed.write().unwrap() = new_elapsed;
         }
       }
     }

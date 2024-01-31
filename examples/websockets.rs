@@ -1,10 +1,10 @@
 use currently_playing::MediaEvent;
-use currently_playing::ws::MediaListener;
+use currently_playing::ws::WebsocketMediaSource;
 
 #[tokio::main]
 async fn main() {
   // Create listener
-  let listener = MediaListener::bind_default().await.unwrap();
+  let listener = WebsocketMediaSource::bind_default().await.unwrap();
 
   // Listen for incoming connections, if spotify closes, the loop keeps listening
   while let Ok(mut connection) = listener.get_connection().await {
