@@ -16,7 +16,7 @@ async fn main() {
         MediaEvent::StateChanged(state) => println!("Changed state to {:?}", state),
         // Gets called on a set interval, wont get called if player is paused or stopped,
         // Value is a percentage of the position between 0 and 1
-        MediaEvent::ProgressChanged(time) => println!("Changed progress to {}", time)
+        MediaEvent::ProgressChanged(elapsed) => println!("Changed progress to {:?}", elapsed)
       }
     }
   }

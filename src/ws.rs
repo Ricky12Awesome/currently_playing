@@ -186,11 +186,9 @@ async fn background_task(
         MediaEvent::StateChanged(state) => {
           metadata.write().unwrap().state = state;
         },
-        MediaEvent::ProgressChanged(time) => {
-          let duration = metadata.read().unwrap().duration;
-          let duration = duration.mul_f64(time);
-
-          *elapsed.write().unwrap() = duration;
+        MediaEvent::ProgressChanged(new_elapsed) => {
+          metadata.write().unwrap().elapsed = new_elapsed;
+          *elapsed.write().unwrap() = new_elapsed;
         }
       }
     }

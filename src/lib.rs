@@ -191,6 +191,7 @@ impl MediaMetadata {
 }
 
 /// Media Events
+#[serde_with::serde_as]
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum MediaEvent {
@@ -201,5 +202,5 @@ pub enum MediaEvent {
   /// Event for when progress is updated, usually called on a set interval
   ///
   /// value is a percentage of the duration
-  ProgressChanged(f64),
+  ProgressChanged(#[serde_as(as = "::serde_with::DurationMilliSeconds<u64>")] Duration),
 }

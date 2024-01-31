@@ -183,9 +183,7 @@ fn background_task(
         Some(MediaEvent::MediaChanged(new_metadata.clone()))
       }
       _ if metadata.state != state => Some(MediaEvent::StateChanged(state)),
-      _ if state == MediaState::Playing => Some(MediaEvent::ProgressChanged(
-        elapsed.as_secs_f64() / metadata.duration.as_secs_f64(),
-      )),
+      _ if state == MediaState::Playing => Some(MediaEvent::ProgressChanged(elapsed)),
       _ => None,
     };
 

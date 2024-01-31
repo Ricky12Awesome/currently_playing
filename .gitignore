@@ -1,3 +1,4 @@
 /target
 /Cargo.lock
 /.idea
+/extensions/globals.d.ts
