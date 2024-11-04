@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Display, Formatter};
+use std::hash::Hash;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -186,7 +187,12 @@ impl MediaMetadata {
   }
 
   pub fn is_different(&self, other: &Self) -> bool {
-    (self.uid.is_some() && self.uid != other.uid) || self.title != other.title
+    let uid = self.uid.is_some() && self.uid != other.uid;
+    let uri = self.uri.is_some() && self.uri != other.uri;
+    let title = self.title != other.title;
+    let artists = self.artists != other.artists;
+
+    uid || uri || (title && artists)
   }
 }
 

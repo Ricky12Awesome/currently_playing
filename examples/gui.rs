@@ -4,7 +4,7 @@ use eframe::egui;
 use eframe::egui::{Align, Color32, Image, ImageSource, Layout};
 use eframe::egui::util::hash;
 
-use currently_playing::listener::{MediaListener, MediaSource, MediaSourceConfig};
+use currently_playing::listener::{MediaListener, MediaSource, MediaSourceConfig, MediaSourcePriority};
 
 fn main() -> Result<(), eframe::Error> {
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -31,9 +31,13 @@ fn main() -> Result<(), eframe::Error> {
       // This gives us image support:
       egui_extras::install_image_loaders(&cc.egui_ctx);
 
-      Box::new(MyApp {
-        listener: MediaListener::create(MediaSourceConfig::default()).unwrap(),
-      })
+      Ok(Box::new(MyApp {
+        listener: MediaListener::create(MediaSourceConfig {
+          priority: MediaSourcePriority::System,
+          websocket_enabled: false,
+          ..Default::default()
+        }).unwrap(),
+      }))
     }),
   )
 }

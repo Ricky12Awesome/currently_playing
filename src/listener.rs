@@ -122,7 +122,7 @@ impl MediaSource for MediaListener {
       false => None,
     };
 
-    let websocket = match cfg.system_enabled {
+    let websocket = match cfg.websocket_enabled {
       true => {
         let source = WebsocketMediaSourceBackground::create(cfg.clone())?;
         Some(source)

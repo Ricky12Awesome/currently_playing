@@ -26,7 +26,7 @@ version = "^0.7"
 features = ["rt"]
 
 [dependencies.tokio-tungstenite]
-version = "^0.21"
+version = "^0.24"
 optional = true
 
 [dependencies.futures-util]
@@ -35,7 +35,7 @@ default-features = false
 features = ["sink", "async-await", "std"]
 
 [target.'cfg(windows)'.dependencies.windows]
-version = "^0.52"
+version = "^0.58"
 features = [
     "Foundation_Metadata",
     "Storage_Streams",
@@ -47,15 +47,15 @@ version = "^2.0"
 
 [dev-dependencies]
 benchmarking = "^0.4"
-eframe = "^0.25"
+eframe = "0.29"
 env_logger = "^0.11"
 
 [dev-dependencies.image]
-version = "^0.24"
+version = "0.25"
 features = ["default"]
 
 [dev-dependencies.egui_extras]
-version = "^0.25"
+version = "0.29"
 features = ["all_loaders"]
 
 [dev-dependencies.tokio]
